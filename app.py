@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 import requests
+import csv # CSV操作用にインポート
 
 # PDF生成用ライブラリ (ReportLab)
 from reportlab.pdfgen import canvas
@@ -13,29 +14,67 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Table, TableStyle
 
-# --- フォントの準備（スマホやクラウド環境用） ---
-# 日本語フォント(IPAexGothic)を自動ダウンロードして使えるようにする
-FONT_URL = "https://moji.or.jp/wp-content/ipafont/IPAexfont/ipaexg00401.zip"
+# --- フォントの準備 ---
 FONT_FILE = "ipaexg.ttf"
 
-def register_japanese_font():
-    """日本語フォントを登録する（なければダウンロード）"""
-    if not os.path.exists(FONT_FILE):
-        # 簡易的にIPAフォントなどをダウンロードする処理（実運用の際はローカル配置推奨）
-        # ここではGoogle Fonts等の直リンクが難しいため、
-        # 動作確認用に「Notion Sans JP」や既存フォントがあればそれを使う設定にします
-        pass
+# --- データの読み込み関数（ここを追加・強化） ---
+def load_book_data(filename):
+    """
+    CSVファイルを読み込んで辞書として返す関数
+    Streamlit Cloudでのパスずれや、文字コード問題を解決するロジック入り
+    """
+    data = {}
     
-    # ⚠️注意: クラウドで動かす際はここに.ttfファイルが必要です。
-    # 今回はエラー回避のため、デフォルトフォントで日本語が表示できない警告を出します。
-    # 実装時は同階層に 'ipaexg.ttf' を置いてください。
-    try:
-        pdfmetrics.registerFont(TTFont('Japanese', FONT_FILE))
-        return 'Japanese'
-    except:
-        return 'Helvetica' # 日本語が出ない場合のフォールバック
+    # 1. ファイルの絶対パスを取得（重要: これがないとFile not foundになりやすい）
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_dir, filename)
 
-# --- 計算ロジック（前回と同じ） ---
+    # ファイルがない場合は空の辞書を返す（エラー回避）
+    if not os.path.exists(file_path):
+        # 開発中の確認用にWarningを出す（本番では消してもOK）
+        # st.warning(f"注意: {filename} が見つかりません。手入力モードのみになります。")
+        return data
+
+    # 2. 読み込み処理（内部関数）
+    def read_csv_content(encoding_type):
+        temp_data = {}
+        with open(file_path, newline='', encoding=encoding_type) as f:
+            reader = csv.reader(f)
+            for row in reader:
+                # 3列以上ある行だけ読み込む (科目, 教材名, 分量, [単位])
+                if len(row) >= 3:
+                    subj = row[0].strip()
+                    name = row[1].strip()
+                    try:
+                        amount = int(row[2].strip())
+                        # 4列目があれば単位、なければデフォルト "p."
+                        unit_label = row[3].strip() if len(row) >= 4 else "p."
+                        
+                        # 辞書に格納
+                        temp_data[name] = {
+                            "subject": subj, 
+                            "amount": amount, 
+                            "unit_label": unit_label
+                        }
+                    except:
+                        pass # 数値変換エラーなどはスキップ
+        return temp_data
+
+    # 3. エンコーディング自動判定（UTF-8 -> Shift-JISの順で試す）
+    try:
+        data = read_csv_content('utf-8')
+    except UnicodeDecodeError:
+        try:
+            data = read_csv_content('cp932') # Windows Excel形式
+        except:
+            st.error("CSVファイルの読み込みに失敗しました。")
+            return {}
+    except Exception:
+        return {}
+        
+    return data
+
+# --- 計算ロジック ---
 def format_range_str(start_cum, end_cum, max_amount, label):
     start_lap = (start_cum - 1) // max_amount + 1
     start_val = (start_cum - 1) % max_amount + 1
@@ -94,14 +133,12 @@ def calculate_schedule(start_date, end_date, input_val, rounds, offset, unit_lab
                 plan[d_str] = "予備"
     return plan
 
-# --- PDF生成ロジック (ReportLab使用) ---
+# --- PDF生成ロジック ---
 def generate_pdf(study_plans):
     filename = "study_plan.pdf"
     c = canvas.Canvas(filename, pagesize=landscape(A4))
     width, height = landscape(A4)
     
-    # フォント登録（同階層にipaexg.ttfがある前提）
-    # ※無い場合は日本語が文字化けします
     font_name = "Helvetica"
     try:
         pdfmetrics.registerFont(TTFont('Japanese', 'ipaexg.ttf'))
@@ -109,7 +146,6 @@ def generate_pdf(study_plans):
     except:
         st.warning("日本語フォント(ipaexg.ttf)が見つかりません。PDFの文字が化ける可能性があります。")
 
-    # 科目順ソート
     subject_order = ["英語", "数学", "国語", "理科", "社会"]
     def sort_key(plan):
         subj = plan["subject"]
@@ -117,7 +153,6 @@ def generate_pdf(study_plans):
         return 99
     study_plans.sort(key=sort_key)
 
-    # 全期間の取得
     if not study_plans: return None
     min_date = min(p["start"] for p in study_plans)
     max_date = max(p["end"] for p in study_plans)
@@ -126,19 +161,16 @@ def generate_pdf(study_plans):
     
     while curr_monday <= max_date:
         draw_week_page(c, width, height, curr_monday, study_plans, font_name)
-        c.showPage() # 改ページ
+        c.showPage()
         curr_monday += timedelta(days=7)
         
     c.save()
     return filename
 
 def draw_week_page(c, w, h, monday, plans, font_name):
-    # タイトル
     c.setFont(font_name, 20)
     c.drawString(20*mm, h - 20*mm, "週間学習計画表")
     
-    # テーブルデータの作成
-    # ヘッダー行
     days_of_week = ["月", "火", "水", "木", "金", "土", "日"]
     header = ["科目/教材"]
     for i in range(7):
@@ -147,14 +179,11 @@ def draw_week_page(c, w, h, monday, plans, font_name):
     
     data = [header]
     
-    # データ行
     for plan in plans:
         row = []
-        # 1列目: 科目と教材名
         label = f"{plan['subject']}\n{plan['book']}"
         row.append(label)
         
-        # 2~8列目: 各日の内容
         for i in range(7):
             d = monday + timedelta(days=i)
             d_str = d.strftime("%Y-%m-%d")
@@ -162,7 +191,6 @@ def draw_week_page(c, w, h, monday, plans, font_name):
             row.append(content)
         data.append(row)
         
-    # テーブルスタイルの設定
     table = Table(data, colWidths=[40*mm] + [33*mm]*7)
     
     style = TableStyle([
@@ -170,57 +198,51 @@ def draw_week_page(c, w, h, monday, plans, font_name):
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey), # ヘッダー背景
-        ('TEXTCOLOR', (6,0), (6,-1), colors.blue), # 土曜
-        ('TEXTCOLOR', (7,0), (7,-1), colors.red),  # 日曜
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('TEXTCOLOR', (6,0), (6,-1), colors.blue),
+        ('TEXTCOLOR', (7,0), (7,-1), colors.red),
     ])
     
-    # 「復習」の文字を赤くする処理はReportLabのTableだと少し複雑になるため、
-    # ここでは簡易的にセルごとの設定を行うループを追加
     for r_idx, row in enumerate(data):
         for c_idx, val in enumerate(row):
             if "復習" in val:
                 style.add('TEXTCOLOR', (c_idx, r_idx), (c_idx, r_idx), colors.red)
-                style.add('FONT', (c_idx, r_idx), (c_idx, r_idx), font_name, 9) # 太字にしたいがTTF次第
+                style.add('FONT', (c_idx, r_idx), (c_idx, r_idx), font_name, 9)
 
     table.setStyle(style)
-    
-    # 描画位置
     table.wrapOn(c, w, h)
-    table.drawOn(c, 10*mm, h - 180*mm) # 位置調整
+    table.drawOn(c, 10*mm, h - 180*mm)
 
 # --- Streamlit アプリ本体 ---
 def main():
     st.set_page_config(page_title="学習計画メーカー", layout="wide")
     st.title("📱 スマホ対応・学習計画表ジェネレーター")
 
-    # セッション状態（リストの保持）
+    # セッション状態
     if "study_plans" not in st.session_state:
         st.session_state.study_plans = []
 
-    # サイドバー：入力フォーム
     with st.sidebar:
         st.header("① 教材の登録")
         
-        # CSVの代わりの簡易データ（実運用ではファイルアップロードも可能）
-        book_db = {
-            "青チャート": {"subj": "数学", "amt": 500, "unit": "No."},
-            "ターゲット1900": {"subj": "英語", "amt": 1900, "unit": "No."},
-            "現代文キーワード": {"subj": "国語", "amt": 160, "unit": "p."},
-            "物理のエッセンス": {"subj": "理科", "amt": 100, "unit": "p."},
-            "日本史B用語集": {"subj": "社会", "amt": 300, "unit": "p."}
-        }
+        # ★ここを修正: CSVからデータを読み込む
+        book_db = load_book_data("books.csv")
         
-        book_name = st.selectbox("教材を選択", ["(手入力)"] + list(book_db.keys()))
+        # セレクトボックス (データがない場合は手入力のみ)
+        options = ["(手入力)"] + list(book_db.keys())
+        book_name = st.selectbox("教材を選択", options)
         
-        # 自動入力
+        # デフォルト値の設定
         default_subj, default_amt, default_unit = "数学", 100, "p."
+        
         if book_name in book_db:
-            default_subj = book_db[book_name]["subj"]
-            default_amt = book_db[book_name]["amt"]
-            default_unit = book_db[book_name]["unit"]
+            # CSVから読み込んだキー名を使用 (subject, amount, unit_label)
+            default_subj = book_db[book_name]["subject"]
+            default_amt = book_db[book_name]["amount"]
+            default_unit = book_db[book_name]["unit_label"]
             
         subj = st.text_input("科目", value=default_subj)
+        
         if book_name == "(手入力)":
             book_real_name = st.text_input("教材名を入力")
         else:
@@ -240,12 +262,11 @@ def main():
         end_date = st.date_input("終了日", datetime.now() + timedelta(days=14))
         
         if st.button("リストに追加", type="primary"):
-            # 計算実行
             s_dt = datetime.combine(start_date, datetime.min.time())
             e_dt = datetime.combine(end_date, datetime.min.time())
             
             # 手入力の場合は入力値をMAXと仮定
-            book_max = book_db[book_name]["amt"] if book_name in book_db else val
+            book_max = book_db[book_name]["amount"] if book_name in book_db else val
             
             offset = len(st.session_state.study_plans) % 4
             
@@ -261,22 +282,18 @@ def main():
             })
             st.success("追加しました！")
 
-    # メイン画面：リスト表示
     st.header("② 登録済みリスト")
     
     if st.session_state.study_plans:
-        # データフレームで見やすく表示
         df = pd.DataFrame(st.session_state.study_plans)
         st.dataframe(df[["subject", "book", "detail"]], use_container_width=True)
         
-        # 削除ボタン
         if st.button("リストを全クリア"):
             st.session_state.study_plans = []
             st.rerun()
 
         st.divider()
         
-        # PDF生成ボタン
         st.header("③ 出力")
         if st.button("PDFを作成する"):
             pdf_file = generate_pdf(st.session_state.study_plans)
@@ -289,7 +306,11 @@ def main():
                         mime="application/pdf"
                     )
     else:
-        st.info("左のサイドバーから教材を追加してください")
+        # 初回表示時にCSVが読めているか確認するためのメッセージ
+        if not book_db:
+             st.info("👈 左のサイドバーから手入力で教材を追加してください。（books.csvが見つかりません）")
+        else:
+             st.info("👈 左のサイドバーから教材を選択・追加してください。")
 
 if __name__ == "__main__":
     main()
