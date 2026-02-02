@@ -210,8 +210,19 @@ def draw_week_page(c, w, h, monday, plans, font_name):
                 style.add('FONT', (c_idx, r_idx), (c_idx, r_idx), font_name, 9)
 
     table.setStyle(style)
+    
+    # --- 位置調整の修正 ---
+    # 1. まずテーブルのサイズを計算させる
     table.wrapOn(c, w, h)
-    table.drawOn(c, 10*mm, h - 180*mm)
+    # 2. 計算されたテーブルの高さを取得
+    table_height = table._height
+    
+    # 3. 配置するY座標を計算（用紙の上端から40mm下の位置に、テーブルの上辺を合わせる）
+    # ReportLabは「左下」の座標を指定するため、「用紙高さ - 上マージン - テーブル高さ」となる
+    y_position = h - 40*mm - table_height
+
+    # 4. 計算した位置に描画
+    table.drawOn(c, 10*mm, y_position)
 
 # --- Streamlit アプリ本体 ---
 def main():
@@ -314,4 +325,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
