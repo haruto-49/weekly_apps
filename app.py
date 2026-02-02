@@ -146,7 +146,7 @@ def generate_pdf(study_plans):
     except:
         st.warning("日本語フォント(ipaexg.ttf)が見つかりません。PDFの文字が化ける可能性があります。")
 
-    subject_order = ["英語", "数学", "国語", "理科", "社会"]
+    subject_order = ["英語", "数学", "現代文","古文","漢文","物理" ,"化学","生物","地学","地理","日本史","世界史","倫理・政経"]
     def sort_key(plan):
         subj = plan["subject"]
         if subj in subject_order: return subject_order.index(subj)
@@ -314,3 +314,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
