@@ -169,40 +169,69 @@ def draw_week_page(c, w, h, monday, plans, font_name):
     table.drawOn(c, 10*mm, y_position)
 
 
-# --- ★新機能: 年間ロードマップ生成ロジック ---
+# --- ★強化版: 年間ロードマップ生成ロジック (グリッド線入り) ---
 def generate_roadmap_pdf(study_plans):
     filename = "roadmap.pdf"
     c = canvas.Canvas(filename, pagesize=landscape(A4))
     width, height = landscape(A4)
     
-    # フォント設定
     font_name = "Helvetica"
     try:
         pdfmetrics.registerFont(TTFont('Japanese', 'ipaexg.ttf'))
         font_name = 'Japanese'
     except: pass
 
-    # 1. 期間の決定 (全データの最小開始日〜最大終了日)
     if not study_plans: return None
     min_date = min(p["start"] for p in study_plans)
     max_date = max(p["end"] for p in study_plans)
     
-    # 開始をその月の1日に、終了をその月の末日に調整
+    # 表示期間の調整
     start_view = min_date.replace(day=1)
-    # 月末日の計算ロジック
     next_month = max_date.replace(day=28) + timedelta(days=4)
     end_view = next_month - timedelta(days=next_month.day)
-    
     total_days = (end_view - start_view).days + 1
     
-    # 2. 描画エリアの設定
+    # 描画エリア
     margin_x = 20*mm
     margin_y = 20*mm
     chart_width = width - 2 * margin_x
-    chart_height = height - 40*mm # タイトル分を確保
+    chart_height = height - 40*mm
     
-    # 3. 科目ごとのデータ整理と色設定
-    subjects = {} # {科目名: [plan1, plan2...]}
+    # 日付 -> X座標
+    def get_x(dt):
+        delta = (dt - start_view).days
+        return margin_x + (delta / total_days) * chart_width
+
+    # タイトル
+    c.setFont(font_name, 18)
+    c.drawString(margin_x, height - 20*mm, "年間学習ロードマップ")
+
+    # --- 1. グリッド線 (縦: 時間軸) ---
+    c.setFont(font_name, 9)
+    curr = start_view
+    
+    # 縦線の描画ループ（1日ずつ進める）
+    while curr <= end_view:
+        x = get_x(curr)
+        
+        # 月初めの線 (太く)
+        if curr.day == 1:
+            c.setLineWidth(0.5)
+            c.setStrokeColor(colors.black)
+            c.line(x, height - 30*mm, x, margin_y)
+            # 月のラベル
+            c.drawString(x + 2*mm, height - 28*mm, curr.strftime("%Y/%m"))
+            
+        # 週初め(月曜日)の線 (細く、薄く) --- ここが追加点
+        elif curr.weekday() == 0:
+            c.setLineWidth(0.2)
+            c.setStrokeColor(colors.lightgrey)
+            c.line(x, height - 30*mm, x, margin_y)
+            
+        curr += timedelta(days=1)
+
+    # --- 2. バーの描画 ---
+    subjects = {}
     subj_colors = {
         "英語": colors.mistyrose, "数学": colors.aliceblue, "国語": colors.lavenderblush,
         "理科": colors.honeydew, "社会": colors.lemonchiffon, "情報": colors.whitesmoke
@@ -214,107 +243,79 @@ def generate_roadmap_pdf(study_plans):
         if s not in subjects: subjects[s] = []
         subjects[s].append(p)
     
-    # 表示順序
     subj_order = ["英語", "数学", "国語", "理科", "社会"]
     sorted_subjs = sorted(subjects.keys(), key=lambda x: subj_order.index(x) if x in subj_order else 99)
 
-    # 4. 描画開始
-    c.setFont(font_name, 18)
-    c.drawString(margin_x, height - 20*mm, "年間学習ロードマップ")
-    
-    # 軸の描画 (月ごとの縦線)
-    c.setFont(font_name, 9)
-    c.setLineWidth(0.3)
-    c.setStrokeColor(colors.grey)
-    
-    # 日付 -> X座標変換関数
-    def get_x(dt):
-        delta = (dt - start_view).days
-        return margin_x + (delta / total_days) * chart_width
-
-    # 月のメモリを描画
-    curr = start_view
-    while curr <= end_view:
-        x = get_x(curr)
-        c.line(x, height - 30*mm, x, margin_y)
-        c.drawString(x + 2*mm, height - 28*mm, curr.strftime("%Y/%m"))
-        # 翌月へ
-        if curr.month == 12:
-            curr = curr.replace(year=curr.year+1, month=1, day=1)
-        else:
-            curr = curr.replace(month=curr.month+1, day=1)
-
-    # 5. ガントチャートのバーを描画
     current_y = height - 35*mm
-    lane_height = 8*mm # バーの高さ
-    lane_gap = 4*mm    # バーの間隔
-    subj_gap = 10*mm   # 科目間の間隔
+    lane_height = 8*mm
+    lane_gap = 4*mm
+    subj_gap = 10*mm
 
+    # 科目ごとのループ
     for subj in sorted_subjs:
+        # --- 横線 (科目区切り) ---
+        c.setLineWidth(0.5)
+        c.setStrokeColor(colors.grey)
+        c.line(margin_x, current_y + 2*mm, width - margin_x, current_y + 2*mm) # 科目の上の線
+
         # 科目ラベル
         c.setFont(font_name, 11)
         c.setFillColor(colors.black)
-        c.drawString(margin_x - 15*mm, current_y - 8*mm, subj) # 左側に科目名
+        c.drawString(margin_x - 15*mm, current_y - 8*mm, subj)
         
-        # この科目の教材リスト
         plans = subjects[subj]
-        plans.sort(key=lambda x: x["start"]) # 開始日順にソート
+        plans.sort(key=lambda x: x["start"])
         
-        # 段組み計算 (重なり回避)
-        # lanes = [ [end_date_of_last_item_in_lane0], [end_date_of_lane1]... ]
+        # 段組み計算
         lanes = [] 
-        
         for p in plans:
             p_start = p["start"]
             p_end = p["end"]
-            
-            # 入れるレーンを探す
             placed = False
             lane_idx = 0
             for i, last_end in enumerate(lanes):
-                if last_end < p_start: # このレーンの最後より後に始まるなら置ける
+                if last_end < p_start:
                     lanes[i] = p_end
                     lane_idx = i
                     placed = True
                     break
-            
             if not placed:
                 lanes.append(p_end)
                 lane_idx = len(lanes) - 1
             
-            # 座標計算
             x_start = get_x(p_start)
             x_end = get_x(p_end)
             bar_width = x_end - x_start
-            if bar_width < 1*mm: bar_width = 1*mm # 最低幅
+            if bar_width < 1*mm: bar_width = 1*mm
             
-            # バーのY座標 (科目の基準Yから、レーン分だけ下げる)
             bar_y = current_y - (lane_idx + 1) * (lane_height + lane_gap)
             
-            # 描画
+            # バー描画
             col = subj_colors.get(subj, default_color)
             c.setFillColor(col)
+            c.setStrokeColor(colors.black)
+            c.setLineWidth(0.3)
             c.rect(x_start, bar_y, bar_width, lane_height, stroke=1, fill=1)
             
-            # 文字描画 (バーの中に収める、またははみ出すならクリップ)
+            # 文字
             c.setFillColor(colors.black)
             c.setFont(font_name, 8)
-            # バーの中央に文字
             text = p["book"]
             c.drawString(x_start + 1*mm, bar_y + 2*mm, text)
 
-        # 次の科目のためにY座標を更新
-        # この科目で使ったレーン数分だけ下げる
+        # Y座標更新
         used_height = len(lanes) * (lane_height + lane_gap)
         current_y -= (used_height + subj_gap)
         
-        # ページ下端を超えたら改ページ (簡易実装)
         if current_y < margin_y + 20*mm:
              c.showPage()
              current_y = height - 30*mm
-             # 改ページ後の再設定
              c.setFont(font_name, 18)
-             # 再度軸描画などは省略(必要ならここに関数化して呼ぶ)
+
+    # 最後の横線
+    c.setLineWidth(0.5)
+    c.setStrokeColor(colors.grey)
+    c.line(margin_x, current_y + subj_gap + 2*mm, width - margin_x, current_y + subj_gap + 2*mm)
 
     c.save()
     return filename
@@ -410,7 +411,6 @@ def main():
         
         with col_pdf2:
             st.subheader("年間ロードマップ (マクロ)")
-            # ★ここが新機能
             if st.button("ロードマップPDFを作成"):
                 roadmap_file = generate_roadmap_pdf(st.session_state.study_plans)
                 if roadmap_file:
