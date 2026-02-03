@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import os
-import requests
 import csv
 
 # PDF生成用ライブラリ (ReportLab)
@@ -103,9 +102,9 @@ def calculate_schedule(start_date, end_date, input_val, rounds, offset, unit_lab
                 plan[d_str] = "予備"
     return plan
 
-# --- PDF生成ロジック ---
+# --- PDF生成ロジック (週間予定表) ---
 def generate_pdf(study_plans):
-    filename = "study_plan.pdf"
+    filename = "weekly_plan.pdf"
     c = canvas.Canvas(filename, pagesize=landscape(A4))
     width, height = landscape(A4)
     font_name = "Helvetica"
@@ -169,6 +168,158 @@ def draw_week_page(c, w, h, monday, plans, font_name):
     y_position = h - 40*mm - table._height
     table.drawOn(c, 10*mm, y_position)
 
+
+# --- ★新機能: 年間ロードマップ生成ロジック ---
+def generate_roadmap_pdf(study_plans):
+    filename = "roadmap.pdf"
+    c = canvas.Canvas(filename, pagesize=landscape(A4))
+    width, height = landscape(A4)
+    
+    # フォント設定
+    font_name = "Helvetica"
+    try:
+        pdfmetrics.registerFont(TTFont('Japanese', 'ipaexg.ttf'))
+        font_name = 'Japanese'
+    except: pass
+
+    # 1. 期間の決定 (全データの最小開始日〜最大終了日)
+    if not study_plans: return None
+    min_date = min(p["start"] for p in study_plans)
+    max_date = max(p["end"] for p in study_plans)
+    
+    # 開始をその月の1日に、終了をその月の末日に調整
+    start_view = min_date.replace(day=1)
+    # 月末日の計算ロジック
+    next_month = max_date.replace(day=28) + timedelta(days=4)
+    end_view = next_month - timedelta(days=next_month.day)
+    
+    total_days = (end_view - start_view).days + 1
+    
+    # 2. 描画エリアの設定
+    margin_x = 20*mm
+    margin_y = 20*mm
+    chart_width = width - 2 * margin_x
+    chart_height = height - 40*mm # タイトル分を確保
+    
+    # 3. 科目ごとのデータ整理と色設定
+    subjects = {} # {科目名: [plan1, plan2...]}
+    subj_colors = {
+        "英語": colors.mistyrose, "数学": colors.aliceblue, "国語": colors.lavenderblush,
+        "理科": colors.honeydew, "社会": colors.lemonchiffon, "情報": colors.whitesmoke
+    }
+    default_color = colors.lightgrey
+
+    for p in study_plans:
+        s = p["subject"]
+        if s not in subjects: subjects[s] = []
+        subjects[s].append(p)
+    
+    # 表示順序
+    subj_order = ["英語", "数学", "国語", "理科", "社会"]
+    sorted_subjs = sorted(subjects.keys(), key=lambda x: subj_order.index(x) if x in subj_order else 99)
+
+    # 4. 描画開始
+    c.setFont(font_name, 18)
+    c.drawString(margin_x, height - 20*mm, "年間学習ロードマップ")
+    
+    # 軸の描画 (月ごとの縦線)
+    c.setFont(font_name, 9)
+    c.setLineWidth(0.3)
+    c.setStrokeColor(colors.grey)
+    
+    # 日付 -> X座標変換関数
+    def get_x(dt):
+        delta = (dt - start_view).days
+        return margin_x + (delta / total_days) * chart_width
+
+    # 月のメモリを描画
+    curr = start_view
+    while curr <= end_view:
+        x = get_x(curr)
+        c.line(x, height - 30*mm, x, margin_y)
+        c.drawString(x + 2*mm, height - 28*mm, curr.strftime("%Y/%m"))
+        # 翌月へ
+        if curr.month == 12:
+            curr = curr.replace(year=curr.year+1, month=1, day=1)
+        else:
+            curr = curr.replace(month=curr.month+1, day=1)
+
+    # 5. ガントチャートのバーを描画
+    current_y = height - 35*mm
+    lane_height = 8*mm # バーの高さ
+    lane_gap = 4*mm    # バーの間隔
+    subj_gap = 10*mm   # 科目間の間隔
+
+    for subj in sorted_subjs:
+        # 科目ラベル
+        c.setFont(font_name, 11)
+        c.setFillColor(colors.black)
+        c.drawString(margin_x - 15*mm, current_y - 8*mm, subj) # 左側に科目名
+        
+        # この科目の教材リスト
+        plans = subjects[subj]
+        plans.sort(key=lambda x: x["start"]) # 開始日順にソート
+        
+        # 段組み計算 (重なり回避)
+        # lanes = [ [end_date_of_last_item_in_lane0], [end_date_of_lane1]... ]
+        lanes = [] 
+        
+        for p in plans:
+            p_start = p["start"]
+            p_end = p["end"]
+            
+            # 入れるレーンを探す
+            placed = False
+            lane_idx = 0
+            for i, last_end in enumerate(lanes):
+                if last_end < p_start: # このレーンの最後より後に始まるなら置ける
+                    lanes[i] = p_end
+                    lane_idx = i
+                    placed = True
+                    break
+            
+            if not placed:
+                lanes.append(p_end)
+                lane_idx = len(lanes) - 1
+            
+            # 座標計算
+            x_start = get_x(p_start)
+            x_end = get_x(p_end)
+            bar_width = x_end - x_start
+            if bar_width < 1*mm: bar_width = 1*mm # 最低幅
+            
+            # バーのY座標 (科目の基準Yから、レーン分だけ下げる)
+            bar_y = current_y - (lane_idx + 1) * (lane_height + lane_gap)
+            
+            # 描画
+            col = subj_colors.get(subj, default_color)
+            c.setFillColor(col)
+            c.rect(x_start, bar_y, bar_width, lane_height, stroke=1, fill=1)
+            
+            # 文字描画 (バーの中に収める、またははみ出すならクリップ)
+            c.setFillColor(colors.black)
+            c.setFont(font_name, 8)
+            # バーの中央に文字
+            text = p["book"]
+            c.drawString(x_start + 1*mm, bar_y + 2*mm, text)
+
+        # 次の科目のためにY座標を更新
+        # この科目で使ったレーン数分だけ下げる
+        used_height = len(lanes) * (lane_height + lane_gap)
+        current_y -= (used_height + subj_gap)
+        
+        # ページ下端を超えたら改ページ (簡易実装)
+        if current_y < margin_y + 20*mm:
+             c.showPage()
+             current_y = height - 30*mm
+             # 改ページ後の再設定
+             c.setFont(font_name, 18)
+             # 再度軸描画などは省略(必要ならここに関数化して呼ぶ)
+
+    c.save()
+    return filename
+
+
 # --- Streamlit アプリ本体 ---
 def main():
     st.set_page_config(page_title="学習計画メーカー", layout="wide")
@@ -177,7 +328,7 @@ def main():
     if "study_plans" not in st.session_state:
         st.session_state.study_plans = []
 
-    # --- サイドバー (入力) ---
+    # --- サイドバー ---
     with st.sidebar:
         st.header("① 教材の登録")
         book_db = load_book_data("books.csv")
@@ -220,11 +371,9 @@ def main():
             })
             st.success("追加しました！")
 
-    # --- メイン画面 (リスト表示 & 削除) ---
+    # --- リスト表示 ---
     st.header("② 登録済みリスト")
-    
     if st.session_state.study_plans:
-        # ヘッダー行の表示
         col_h1, col_h2, col_h3, col_h4 = st.columns([2, 4, 3, 1])
         col_h1.markdown("**科目**")
         col_h2.markdown("**教材名**")
@@ -232,31 +381,42 @@ def main():
         col_h4.markdown("**削除**")
         st.divider()
 
-        # 各行の表示 (enumerateでインデックスを取得)
         for i, plan in enumerate(st.session_state.study_plans):
             col1, col2, col3, col4 = st.columns([2, 4, 3, 1])
             col1.text(plan["subject"])
             col2.text(plan["book"])
             col3.text(plan["detail"])
-            
-            # 削除ボタン (keyをユニークにする)
             if col4.button("🗑️", key=f"del_{i}"):
                 del st.session_state.study_plans[i]
-                st.rerun() # 削除後すぐに画面を更新
+                st.rerun()
 
         st.divider()
-        
-        # 全クリアボタン
         if st.button("リストを全クリア", type="secondary"):
             st.session_state.study_plans = []
             st.rerun()
 
+        # --- 出力ボタン ---
         st.header("③ 出力")
-        if st.button("PDFを作成する", type="primary"):
-            pdf_file = generate_pdf(st.session_state.study_plans)
-            if pdf_file:
-                with open(pdf_file, "rb") as f:
-                    st.download_button(label="📄 PDFをダウンロード", data=f, file_name="weekly_plan.pdf", mime="application/pdf")
+        
+        col_pdf1, col_pdf2 = st.columns(2)
+        
+        with col_pdf1:
+            st.subheader("週間計画表 (ミクロ)")
+            if st.button("週間PDFを作成"):
+                pdf_file = generate_pdf(st.session_state.study_plans)
+                if pdf_file:
+                    with open(pdf_file, "rb") as f:
+                        st.download_button(label="📥 週間PDF DL", data=f, file_name="weekly_plan.pdf", mime="application/pdf")
+        
+        with col_pdf2:
+            st.subheader("年間ロードマップ (マクロ)")
+            # ★ここが新機能
+            if st.button("ロードマップPDFを作成"):
+                roadmap_file = generate_roadmap_pdf(st.session_state.study_plans)
+                if roadmap_file:
+                    with open(roadmap_file, "rb") as f:
+                        st.download_button(label="📥 ロードマップDL", data=f, file_name="roadmap.pdf", mime="application/pdf")
+
     else:
         st.info("👈 左のサイドバーから教材を追加してください。")
 
