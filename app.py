@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 import csv
+import calendar # 月末日取得用
 
 # PDF生成用ライブラリ (ReportLab)
 from reportlab.pdfgen import canvas
@@ -102,7 +103,7 @@ def calculate_schedule(start_date, end_date, input_val, rounds, offset, unit_lab
                 plan[d_str] = "予備"
     return plan
 
-# --- PDF生成ロジック (週間予定表) ---
+# --- PDF生成 (週間) ---
 def generate_pdf(study_plans):
     filename = "weekly_plan.pdf"
     c = canvas.Canvas(filename, pagesize=landscape(A4))
@@ -169,7 +170,7 @@ def draw_week_page(c, w, h, monday, plans, font_name):
     table.drawOn(c, 10*mm, y_position)
 
 
-# --- ★修正版: 年間ロードマップ (ズレ修正済み) ---
+# --- ★修正版: 年間ロードマップ (月4分割・均等グリッド) ---
 def generate_roadmap_pdf(study_plans):
     filename = "roadmap.pdf"
     c = canvas.Canvas(filename, pagesize=landscape(A4))
@@ -185,47 +186,71 @@ def generate_roadmap_pdf(study_plans):
     min_date = min(p["start"] for p in study_plans)
     max_date = max(p["end"] for p in study_plans)
     
-    # 期間設定
+    # 期間設定: 開始月の1日 〜 終了月の末日
     start_view = min_date.replace(day=1)
-    next_month = max_date.replace(day=28) + timedelta(days=4)
-    end_view = next_month - timedelta(days=next_month.day)
-    total_days = (end_view - start_view).days + 1
+    # 終了月の末日を計算
+    last_day_of_end_month = calendar.monthrange(max_date.year, max_date.month)[1]
+    end_view = max_date.replace(day=last_day_of_end_month)
     
+    # 表示する月数
+    num_months = (end_view.year - start_view.year) * 12 + (end_view.month - start_view.month) + 1
+    if num_months < 1: num_months = 1
+
     margin_x = 20*mm
     margin_y = 20*mm
     chart_width = width - 2 * margin_x
+    chart_height = height - 40*mm
     
-    # 日付 -> X座標
+    # 1ヶ月あたりの幅（均等割り）
+    width_per_month = chart_width / num_months
+    
+    # --- 座標計算関数 ---
     def get_x(dt):
-        delta = (dt - start_view).days
-        return margin_x + (delta / total_days) * chart_width
+        """日付をX座標に変換（月を4等分とみなす簡易計算）"""
+        # 開始月からの経過月数
+        month_diff = (dt.year - start_view.year) * 12 + (dt.month - start_view.month)
+        # 月内の進捗率 (1日〜31日 を 0.0〜1.0 にマッピング)
+        days_in_month = calendar.monthrange(dt.year, dt.month)[1]
+        day_ratio = (dt.day - 1) / days_in_month
+        
+        # X = マージン + (経過月 + 進捗) * 月幅
+        return margin_x + (month_diff + day_ratio) * width_per_month
 
     # タイトル
     c.setFont(font_name, 18)
     c.drawString(margin_x, height - 20*mm, "年間学習ロードマップ")
 
-    # === グリッド線の描画ロジック変更 ===
-    # 1. まず「週の線（薄い線）」を全期間分引く
+    # === グリッド線の描画 ===
     c.setLineWidth(0.2)
-    c.setStrokeColor(colors.lightgrey)
-    curr = start_view
-    while curr <= end_view:
-        if curr.weekday() == 0: # 月曜日
-            x = get_x(curr)
-            c.line(x, height - 30*mm, x, margin_y)
-        curr += timedelta(days=1)
-
-    # 2. その上から「月の線（濃い線）」を重ねて引く
-    c.setLineWidth(0.5)
-    c.setStrokeColor(colors.black)
     c.setFont(font_name, 9)
-    curr = start_view
-    while curr <= end_view:
-        if curr.day == 1: # 月初
-            x = get_x(curr)
-            c.line(x, height - 30*mm, x, margin_y)
-            c.drawString(x + 2*mm, height - 28*mm, curr.strftime("%Y/%m"))
-        curr += timedelta(days=1)
+    
+    # 月ごとのループ
+    for m in range(num_months):
+        # 月の左端座標
+        month_x = margin_x + m * width_per_month
+        
+        # 1. 月の区切り線 (濃い線)
+        c.setStrokeColor(colors.black)
+        c.setLineWidth(0.5)
+        c.line(month_x, height - 30*mm, month_x, margin_y)
+        
+        # 月ラベル (年が変わる場合は年も表示)
+        curr_m_date = (start_view.replace(day=1) + timedelta(days=32*m)).replace(day=1) # 簡易的な月加算
+        label = curr_m_date.strftime("%Y/%m") if m == 0 or curr_m_date.month == 1 else curr_m_date.strftime("%m")
+        c.drawString(month_x + 2*mm, height - 28*mm, label)
+        
+        # 2. 4分割線 (薄い線: 25%, 50%, 75%)
+        c.setStrokeColor(colors.lightgrey)
+        c.setLineWidth(0.2)
+        quarter_width = width_per_month / 4
+        for q in range(1, 4):
+            qx = month_x + q * quarter_width
+            c.line(qx, height - 30*mm, qx, margin_y)
+
+    # 最後の右端の線
+    c.setStrokeColor(colors.black)
+    c.setLineWidth(0.5)
+    c.line(margin_x + num_months * width_per_month, height - 30*mm, margin_x + num_months * width_per_month, margin_y)
 
     # === バーの描画 ===
     subjects = {}
@@ -306,7 +331,6 @@ def generate_roadmap_pdf(study_plans):
              current_y = height - 30*mm
              c.setFont(font_name, 18)
 
-    # 最後の横線
     c.setLineWidth(0.5)
     c.setStrokeColor(colors.grey)
     c.line(margin_x, current_y + subj_gap + 2*mm, width - margin_x, current_y + subj_gap + 2*mm)
