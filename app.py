@@ -169,7 +169,7 @@ def draw_week_page(c, w, h, monday, plans, font_name):
     table.drawOn(c, 10*mm, y_position)
 
 
-# --- ★強化版: 年間ロードマップ生成ロジック (グリッド線入り) ---
+# --- ★修正版: 年間ロードマップ (ズレ修正済み) ---
 def generate_roadmap_pdf(study_plans):
     filename = "roadmap.pdf"
     c = canvas.Canvas(filename, pagesize=landscape(A4))
@@ -185,17 +185,15 @@ def generate_roadmap_pdf(study_plans):
     min_date = min(p["start"] for p in study_plans)
     max_date = max(p["end"] for p in study_plans)
     
-    # 表示期間の調整
+    # 期間設定
     start_view = min_date.replace(day=1)
     next_month = max_date.replace(day=28) + timedelta(days=4)
     end_view = next_month - timedelta(days=next_month.day)
     total_days = (end_view - start_view).days + 1
     
-    # 描画エリア
     margin_x = 20*mm
     margin_y = 20*mm
     chart_width = width - 2 * margin_x
-    chart_height = height - 40*mm
     
     # 日付 -> X座標
     def get_x(dt):
@@ -206,31 +204,30 @@ def generate_roadmap_pdf(study_plans):
     c.setFont(font_name, 18)
     c.drawString(margin_x, height - 20*mm, "年間学習ロードマップ")
 
-    # --- 1. グリッド線 (縦: 時間軸) ---
-    c.setFont(font_name, 9)
+    # === グリッド線の描画ロジック変更 ===
+    # 1. まず「週の線（薄い線）」を全期間分引く
+    c.setLineWidth(0.2)
+    c.setStrokeColor(colors.lightgrey)
     curr = start_view
-    
-    # 縦線の描画ループ（1日ずつ進める）
     while curr <= end_view:
-        x = get_x(curr)
-        
-        # 月初めの線 (太く)
-        if curr.day == 1:
-            c.setLineWidth(0.5)
-            c.setStrokeColor(colors.black)
+        if curr.weekday() == 0: # 月曜日
+            x = get_x(curr)
             c.line(x, height - 30*mm, x, margin_y)
-            # 月のラベル
-            c.drawString(x + 2*mm, height - 28*mm, curr.strftime("%Y/%m"))
-            
-        # 週初め(月曜日)の線 (細く、薄く) --- ここが追加点
-        elif curr.weekday() == 0:
-            c.setLineWidth(0.2)
-            c.setStrokeColor(colors.lightgrey)
-            c.line(x, height - 30*mm, x, margin_y)
-            
         curr += timedelta(days=1)
 
-    # --- 2. バーの描画 ---
+    # 2. その上から「月の線（濃い線）」を重ねて引く
+    c.setLineWidth(0.5)
+    c.setStrokeColor(colors.black)
+    c.setFont(font_name, 9)
+    curr = start_view
+    while curr <= end_view:
+        if curr.day == 1: # 月初
+            x = get_x(curr)
+            c.line(x, height - 30*mm, x, margin_y)
+            c.drawString(x + 2*mm, height - 28*mm, curr.strftime("%Y/%m"))
+        curr += timedelta(days=1)
+
+    # === バーの描画 ===
     subjects = {}
     subj_colors = {
         "英語": colors.mistyrose, "数学": colors.aliceblue, "国語": colors.lavenderblush,
@@ -251,14 +248,13 @@ def generate_roadmap_pdf(study_plans):
     lane_gap = 4*mm
     subj_gap = 10*mm
 
-    # 科目ごとのループ
     for subj in sorted_subjs:
-        # --- 横線 (科目区切り) ---
+        # 横線 (科目区切り)
         c.setLineWidth(0.5)
         c.setStrokeColor(colors.grey)
-        c.line(margin_x, current_y + 2*mm, width - margin_x, current_y + 2*mm) # 科目の上の線
+        c.line(margin_x, current_y + 2*mm, width - margin_x, current_y + 2*mm)
 
-        # 科目ラベル
+        # 科目名
         c.setFont(font_name, 11)
         c.setFillColor(colors.black)
         c.drawString(margin_x - 15*mm, current_y - 8*mm, subj)
@@ -266,7 +262,6 @@ def generate_roadmap_pdf(study_plans):
         plans = subjects[subj]
         plans.sort(key=lambda x: x["start"])
         
-        # 段組み計算
         lanes = [] 
         for p in plans:
             p_start = p["start"]
@@ -290,7 +285,7 @@ def generate_roadmap_pdf(study_plans):
             
             bar_y = current_y - (lane_idx + 1) * (lane_height + lane_gap)
             
-            # バー描画
+            # バー
             col = subj_colors.get(subj, default_color)
             c.setFillColor(col)
             c.setStrokeColor(colors.black)
@@ -303,7 +298,6 @@ def generate_roadmap_pdf(study_plans):
             text = p["book"]
             c.drawString(x_start + 1*mm, bar_y + 2*mm, text)
 
-        # Y座標更新
         used_height = len(lanes) * (lane_height + lane_gap)
         current_y -= (used_height + subj_gap)
         
