@@ -46,7 +46,7 @@ def load_book_data(filename):
         except: return {}
     return data
 
-# --- 計算ロジック (復習間隔を引数に追加) ---
+# --- 計算ロジック ---
 def format_range_str(start_cum, end_cum, max_amount, label):
     start_lap = (start_cum - 1) // max_amount + 1
     start_val = (start_cum - 1) % max_amount + 1
@@ -62,7 +62,6 @@ def calculate_schedule(start_date, end_date, input_val, rounds, offset, unit_lab
     study_days_count = 0
     for i in range(days_total):
         curr_date = start_date + timedelta(days=i)
-        # 指定された間隔 (interval) で復習日を判定
         if curr_date.toordinal() % interval != offset:
             study_days_count += 1
     
@@ -83,7 +82,6 @@ def calculate_schedule(start_date, end_date, input_val, rounds, offset, unit_lab
         curr_date = start_date + timedelta(days=i)
         d_str = curr_date.strftime("%Y-%m-%d")
         
-        # 復習日判定
         if curr_date.toordinal() % interval == offset:
             plan[d_str] = "★復習"
         else:
@@ -179,6 +177,7 @@ def main():
     if "study_plans" not in st.session_state:
         st.session_state.study_plans = []
 
+    # --- サイドバー (入力) ---
     with st.sidebar:
         st.header("① 教材の登録")
         book_db = load_book_data("books.csv")
@@ -201,9 +200,7 @@ def main():
         with col2:
             unit = st.text_input("単位", value=default_unit)
             
-        # ★追加: 復習間隔の入力
         review_interval = st.number_input("復習の頻度（何日に1回）", value=4, min_value=1)
-        
         rounds = st.number_input("周数", value=1, min_value=1)
         start_date = st.date_input("開始日", datetime.now())
         end_date = st.date_input("終了日", datetime.now() + timedelta(days=14))
@@ -213,7 +210,6 @@ def main():
             e_dt = datetime.combine(end_date, datetime.min.time())
             book_max = book_db[book_name]["amount"] if book_name in book_db else val
             
-            # 登録済みの教材数に応じて復習日をずらす
             offset = len(st.session_state.study_plans) % review_interval
             
             plan_map = calculate_schedule(s_dt, e_dt, val, rounds, offset, unit, mode, book_max, review_interval)
@@ -224,16 +220,39 @@ def main():
             })
             st.success("追加しました！")
 
+    # --- メイン画面 (リスト表示 & 削除) ---
     st.header("② 登録済みリスト")
+    
     if st.session_state.study_plans:
-        df = pd.DataFrame(st.session_state.study_plans)
-        st.dataframe(df[["subject", "book", "detail"]], use_container_width=True)
-        if st.button("リストを全クリア"):
+        # ヘッダー行の表示
+        col_h1, col_h2, col_h3, col_h4 = st.columns([2, 4, 3, 1])
+        col_h1.markdown("**科目**")
+        col_h2.markdown("**教材名**")
+        col_h3.markdown("**詳細**")
+        col_h4.markdown("**削除**")
+        st.divider()
+
+        # 各行の表示 (enumerateでインデックスを取得)
+        for i, plan in enumerate(st.session_state.study_plans):
+            col1, col2, col3, col4 = st.columns([2, 4, 3, 1])
+            col1.text(plan["subject"])
+            col2.text(plan["book"])
+            col3.text(plan["detail"])
+            
+            # 削除ボタン (keyをユニークにする)
+            if col4.button("🗑️", key=f"del_{i}"):
+                del st.session_state.study_plans[i]
+                st.rerun() # 削除後すぐに画面を更新
+
+        st.divider()
+        
+        # 全クリアボタン
+        if st.button("リストを全クリア", type="secondary"):
             st.session_state.study_plans = []
             st.rerun()
-        st.divider()
+
         st.header("③ 出力")
-        if st.button("PDFを作成する"):
+        if st.button("PDFを作成する", type="primary"):
             pdf_file = generate_pdf(st.session_state.study_plans)
             if pdf_file:
                 with open(pdf_file, "rb") as f:
